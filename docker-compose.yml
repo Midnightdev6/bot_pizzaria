@@ -1,0 +1,56 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - NODE_ENV=production
+      - DATABASE_URL=file:./dev.db
+      - FRONTEND_URL=http://localhost:3000
+    volumes:
+      - ./backend/prisma:/app/prisma
+      - backend_db:/app/db
+    depends_on:
+      - db_setup
+    restart: unless-stopped
+    networks:
+      - pizzaria-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_URL=http://localhost:3001/api
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - pizzaria-network
+
+  db_setup:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["npm", "run", "prisma:migrate"]
+    environment:
+      - DATABASE_URL=file:./dev.db
+    volumes:
+      - ./backend/prisma:/app/prisma
+      - backend_db:/app/db
+    networks:
+      - pizzaria-network
+
+volumes:
+  backend_db:
+
+networks:
+  pizzaria-network:
+    driver: bridge
