@@ -141,7 +141,10 @@ app.get("/api/messages", (req, res) => {
       orderedPizza: false,
       orderedDrink: false,
       orderedDessert: false,
+      rejectedDrink: false,
+      rejectedDessert: false,
       lastMessages: [],
+      customerIntent: "unknown",
     },
   });
 });

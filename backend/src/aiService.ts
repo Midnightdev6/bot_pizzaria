@@ -10,7 +10,10 @@ interface ConversationContext {
   orderedPizza: boolean;
   orderedDrink: boolean;
   orderedDessert: boolean;
+  rejectedDrink: boolean;
+  rejectedDessert: boolean;
   lastMessages: string[];
+  customerIntent: "ordering" | "asking" | "rejecting" | "greeting" | "unknown";
 }
 
 interface AIResponse {
@@ -34,31 +37,38 @@ export class AIService {
   private systemPrompt = `
 VOCÊ É UM ATENDENTE VIRTUAL DA PIZZARIA "PIZZARIA AI" - SIGA ESTAS REGRAS RIGOROSAMENTE:
 
-🍕 REGRAS DE NEGÓCIO OBRIGATÓRIAS:
+🧠 COMPREENSÃO ANTES DE VENDA:
+1. ESCUTE E ENTENDA primeiro o que o cliente está dizendo
+2. ANALISE se o cliente está:
+   - Pedindo algo (ex: "quero suco")
+   - Rejeitando algo (ex: "não quero suco", "não gosto")
+   - Fazendo pergunta (ex: "que sabores têm?")
+   - Apenas conversando
 
-1. FOCO EXCLUSIVO EM PIZZA:
+3. RESPEITE a intenção do cliente:
+   - Se ele QUER algo → ajude com esse item
+   - Se ele NÃO QUER algo → respeite e ofereça alternativa diferente
+   - Se rejeitou bebida → não insista em bebida, passe para sobremesa ou confirme pedido
+
+🍕 REGRAS DE NEGÓCIO:
+
+1. FOCO NO CARDÁPIO:
    - APENAS fale sobre itens do nosso cardápio
    - NÃO responda perguntas sobre outros assuntos
-   - Redirecione SEMPRE para pizzas se fugir do assunto
+   - Redirecione educadamente para nossos produtos
 
-2. FORÇA DE VENDA (EDUCADA MAS INSISTENTE):
-   - Seu objetivo é VENDER pizzas
-   - Sempre tente convencer o cliente a pedir
-   - Use técnicas de persuasão suaves
-   - Destaque benefícios e qualidade
+2. VENDA INTELIGENTE (não agressiva):
+   - Seja prestativo primeiro, vendedor depois
+   - Use a regra: Pizza → Bebida → Sobremesa
+   - Se cliente rejeitar uma categoria, pule para próxima
+   - NUNCA insista no que o cliente recusou
 
-3. OFERTAS CONDICIONAIS:
-   - SE cliente não tem bebida → ofereça bebida
-   - SE cliente tem bebida → ofereça sobremesa
-   - Sempre tente fazer upsell
-
-4. PROIBIÇÕES ABSOLUTAS:
-   - NUNCA ofereça descontos
-   - NUNCA ofereça promoções
-   - NUNCA ofereça cupons
+3. PROIBIÇÕES:
+   - NUNCA ofereça descontos, promoções ou cupons
    - NUNCA negocie preços
+   - NUNCA insista no que foi recusado
 
-5. CARDÁPIO FIXO (não invente itens):
+4. CARDÁPIO FIXO:
 
 🍕 PIZZAS:
 - Margherita - R$ 35,90
@@ -83,19 +93,13 @@ VOCÊ É UM ATENDENTE VIRTUAL DA PIZZARIA "PIZZARIA AI" - SIGA ESTAS REGRAS RIGO
 - Petit Gateau - R$ 16,90
 - Mousse de Maracujá - R$ 11,90
 
-6. TRATAMENTO DE REJEIÇÃO:
-   - Se cliente recusar, ofereça alternativas do mesmo tipo
-   - Seja persistente mas educado
-   - Use frases como "que tal experimentar..." 
-   - Nunca desista facilmente
+5. PERSONALIDADE:
+   - Atencioso e compreensivo
+   - Respeitoso às escolhas do cliente
+   - Prestativo sem ser insistente
+   - Foque em satisfazer, não apenas vender
 
-7. PERSONALIDADE:
-   - Simpático e acolhedor
-   - Entusiasmado com as pizzas
-   - Conhecedor do produto
-   - Foque em criar desejo pelo produto
-
-RESPONDA SEMPRE EM PORTUGUÊS BRASILEIRO, seja direto e mantenha foco total em vendas!
+SEMPRE RESPONDA EM PORTUGUÊS BRASILEIRO e priorize a satisfação do cliente!
 `;
 
   async processMessage(
@@ -123,7 +127,10 @@ RESPONDA SEMPRE EM PORTUGUÊS BRASILEIRO, seja direto e mantenha foco total em v
         orderedPizza: false,
         orderedDrink: false,
         orderedDessert: false,
+        rejectedDrink: false,
+        rejectedDessert: false,
         lastMessages: [],
+        customerIntent: "unknown",
       };
 
       currentContext.lastMessages.push(message);
@@ -132,6 +139,11 @@ RESPONDA SEMPRE EM PORTUGUÊS BRASILEIRO, seja direto e mantenha foco total em v
       }
 
       const lowerMessage = message.toLowerCase();
+
+      // Detectar intenção do cliente
+      currentContext.customerIntent = this.detectCustomerIntent(lowerMessage);
+
+      // Detectar pedidos
       if (this.containsPizzaOrder(lowerMessage, pizzas)) {
         currentContext.orderedPizza = true;
       }
@@ -140,6 +152,14 @@ RESPONDA SEMPRE EM PORTUGUÊS BRASILEIRO, seja direto e mantenha foco total em v
       }
       if (this.containsDessertOrder(lowerMessage, desserts)) {
         currentContext.orderedDessert = true;
+      }
+
+      // Detectar rejeições
+      if (this.containsRejection(lowerMessage, "drink")) {
+        currentContext.rejectedDrink = true;
+      }
+      if (this.containsRejection(lowerMessage, "dessert")) {
+        currentContext.rejectedDessert = true;
       }
 
       let contextualPrompt = this.systemPrompt;
@@ -154,6 +174,15 @@ RESPONDA SEMPRE EM PORTUGUÊS BRASILEIRO, seja direto e mantenha foco total em v
       contextualPrompt += `\n- Cliente já pediu sobremesa: ${
         currentContext.orderedDessert ? "SIM" : "NÃO"
       }`;
+      contextualPrompt += `\n- Cliente REJEITOU bebida: ${
+        currentContext.rejectedDrink ? "SIM (NÃO ofereça mais bebidas!)" : "NÃO"
+      }`;
+      contextualPrompt += `\n- Cliente REJEITOU sobremesa: ${
+        currentContext.rejectedDessert
+          ? "SIM (NÃO ofereça mais sobremesas!)"
+          : "NÃO"
+      }`;
+      contextualPrompt += `\n- Intenção atual do cliente: ${currentContext.customerIntent.toUpperCase()}`;
 
       if (currentContext.lastMessages.length > 1) {
         contextualPrompt += `\n\nMENSAGENS ANTERIORES:`;
@@ -163,14 +192,24 @@ RESPONDA SEMPRE EM PORTUGUÊS BRASILEIRO, seja direto e mantenha foco total em v
       }
 
       contextualPrompt += `\n\nESTRATÉGIA DE RESPOSTA:`;
+      if (currentContext.customerIntent === "rejecting") {
+        contextualPrompt += `\n- ATENÇÃO: Cliente está REJEITANDO algo. Seja respeitoso e mude de categoria!`;
+      }
+
       if (!currentContext.orderedPizza) {
         contextualPrompt += `\n- PRIORIDADE: Vender pizza (foque nas mais populares: Calabresa, Margherita)`;
-      } else if (!currentContext.orderedDrink) {
+      } else if (
+        !currentContext.orderedDrink &&
+        !currentContext.rejectedDrink
+      ) {
         contextualPrompt += `\n- PRIORIDADE: Oferecer bebida para acompanhar`;
-      } else if (!currentContext.orderedDessert) {
+      } else if (
+        !currentContext.orderedDessert &&
+        !currentContext.rejectedDessert
+      ) {
         contextualPrompt += `\n- PRIORIDADE: Oferecer sobremesa para finalizar`;
       } else {
-        contextualPrompt += `\n- PRIORIDADE: Confirmar pedido e oferecer algo mais`;
+        contextualPrompt += `\n- PRIORIDADE: Confirmar pedido e finalizar atendimento`;
       }
 
       contextualPrompt += `\n\nMENSAGEM DO CLIENTE: "${message}"`;
@@ -203,40 +242,246 @@ RESPONDA SEMPRE EM PORTUGUÊS BRASILEIRO, seja direto e mantenha foco total em v
           orderedPizza: false,
           orderedDrink: false,
           orderedDessert: false,
+          rejectedDrink: false,
+          rejectedDessert: false,
           lastMessages: [message],
+          customerIntent: "unknown",
         },
       };
     }
   }
 
   private containsPizzaOrder(message: string, pizzas: MenuItem[]): boolean {
-    const pizzaKeywords = ["pizza", "quero", "gostaria", "vou levar"];
-    const pizzaNames = pizzas.map((p) => p.name.toLowerCase());
+    const lowerMessage = message.toLowerCase();
 
-    return (
-      pizzaKeywords.some((keyword) => message.includes(keyword)) ||
-      pizzaNames.some((name) => message.includes(name))
+    // Palavras que indicam negação - se presentes, não é um pedido
+    const negativeWords = [
+      "não",
+      "nao",
+      "nunca",
+      "jamais",
+      "recuso",
+      "dispenso",
+      "sem",
+    ];
+    if (negativeWords.some((word) => lowerMessage.includes(word))) {
+      return false;
+    }
+
+    const positiveKeywords = [
+      "quero",
+      "gostaria",
+      "vou levar",
+      "pode ser",
+      "vou querer",
+      "me dá",
+      "aceito",
+      "sim",
+      "ok",
+      "beleza",
+      "fechado",
+    ];
+    const pizzaNames = pizzas.map((p) => p.name.toLowerCase());
+    const pizzaWords = ["pizza"];
+
+    // Verifica se há intenção positiva + menção a pizza
+    const hasPositiveIntent = positiveKeywords.some((keyword) =>
+      lowerMessage.includes(keyword)
     );
+    const mentionsPizza =
+      pizzaWords.some((word) => lowerMessage.includes(word)) ||
+      pizzaNames.some((name) => lowerMessage.includes(name));
+
+    return hasPositiveIntent && mentionsPizza;
   }
 
   private containsDrinkOrder(message: string, drinks: MenuItem[]): boolean {
-    const drinkKeywords = ["coca", "guaraná", "suco", "água", "bebida"];
+    const lowerMessage = message.toLowerCase();
+
+    // Palavras que indicam negação
+    const negativeWords = [
+      "não",
+      "nao",
+      "nunca",
+      "jamais",
+      "recuso",
+      "dispenso",
+      "sem",
+    ];
+    if (negativeWords.some((word) => lowerMessage.includes(word))) {
+      return false;
+    }
+
+    const positiveKeywords = [
+      "quero",
+      "gostaria",
+      "vou levar",
+      "pode ser",
+      "vou querer",
+      "me dá",
+      "aceito",
+      "sim",
+      "ok",
+      "beleza",
+      "fechado",
+    ];
+    const drinkKeywords = [
+      "coca",
+      "guaraná",
+      "suco",
+      "água",
+      "bebida",
+      "refrigerante",
+    ];
     const drinkNames = drinks.map((d) => d.name.toLowerCase());
 
-    return (
-      drinkKeywords.some((keyword) => message.includes(keyword)) ||
-      drinkNames.some((name) => message.includes(name))
+    const hasPositiveIntent = positiveKeywords.some((keyword) =>
+      lowerMessage.includes(keyword)
     );
+    const mentionsDrink =
+      drinkKeywords.some((keyword) => lowerMessage.includes(keyword)) ||
+      drinkNames.some((name) => lowerMessage.includes(name));
+
+    return hasPositiveIntent && mentionsDrink;
   }
 
   private containsDessertOrder(message: string, desserts: MenuItem[]): boolean {
-    const dessertKeywords = ["brownie", "pudim", "mousse", "sobremesa", "doce"];
+    const lowerMessage = message.toLowerCase();
+
+    // Palavras que indicam negação
+    const negativeWords = [
+      "não",
+      "nao",
+      "nunca",
+      "jamais",
+      "recuso",
+      "dispenso",
+      "sem",
+    ];
+    if (negativeWords.some((word) => lowerMessage.includes(word))) {
+      return false;
+    }
+
+    const positiveKeywords = [
+      "quero",
+      "gostaria",
+      "vou levar",
+      "pode ser",
+      "vou querer",
+      "me dá",
+      "aceito",
+      "sim",
+      "ok",
+      "beleza",
+      "fechado",
+    ];
+    const dessertKeywords = [
+      "brownie",
+      "pudim",
+      "mousse",
+      "sobremesa",
+      "doce",
+      "tiramisù",
+      "petit",
+    ];
     const dessertNames = desserts.map((d) => d.name.toLowerCase());
 
-    return (
-      dessertKeywords.some((keyword) => message.includes(keyword)) ||
-      dessertNames.some((name) => message.includes(name))
+    const hasPositiveIntent = positiveKeywords.some((keyword) =>
+      lowerMessage.includes(keyword)
     );
+    const mentionsDessert =
+      dessertKeywords.some((keyword) => lowerMessage.includes(keyword)) ||
+      dessertNames.some((name) => lowerMessage.includes(name));
+
+    return hasPositiveIntent && mentionsDessert;
+  }
+
+  // Nova função para detectar rejeições
+  private containsRejection(message: string, category: string): boolean {
+    const lowerMessage = message.toLowerCase();
+    const negativeWords = [
+      "não",
+      "nao",
+      "nunca",
+      "jamais",
+      "recuso",
+      "dispenso",
+      "sem",
+      "obrigado",
+    ];
+
+    const categoryWords: { [key: string]: string[] } = {
+      drink: ["bebida", "suco", "refrigerante", "coca", "guaraná", "água"],
+      dessert: ["sobremesa", "doce", "brownie", "pudim", "mousse"],
+      pizza: ["pizza"],
+    };
+
+    const hasNegation = negativeWords.some((word) =>
+      lowerMessage.includes(word)
+    );
+    const mentionsCategory =
+      categoryWords[category]?.some((word) => lowerMessage.includes(word)) ||
+      false;
+
+    return (
+      hasNegation && (mentionsCategory || lowerMessage.includes("obrigado"))
+    );
+  }
+
+  // Detectar intenção do cliente
+  private detectCustomerIntent(
+    message: string
+  ): "ordering" | "asking" | "rejecting" | "greeting" | "unknown" {
+    const lowerMessage = message.toLowerCase();
+
+    // Palavras de cumprimento
+    const greetingWords = [
+      "oi",
+      "olá",
+      "bom dia",
+      "boa tarde",
+      "boa noite",
+      "hello",
+    ];
+    if (greetingWords.some((word) => lowerMessage.includes(word))) {
+      return "greeting";
+    }
+
+    // Palavras de rejeição
+    const rejectionWords = ["não", "nao", "nunca", "obrigado", "dispenso"];
+    if (rejectionWords.some((word) => lowerMessage.includes(word))) {
+      return "rejecting";
+    }
+
+    // Palavras de pergunta
+    const questionWords = [
+      "que",
+      "qual",
+      "como",
+      "quanto",
+      "onde",
+      "?",
+      "tem",
+      "têm",
+    ];
+    if (questionWords.some((word) => lowerMessage.includes(word))) {
+      return "asking";
+    }
+
+    // Palavras de pedido
+    const orderWords = [
+      "quero",
+      "gostaria",
+      "vou levar",
+      "pode ser",
+      "aceito",
+      "sim",
+    ];
+    if (orderWords.some((word) => lowerMessage.includes(word))) {
+      return "ordering";
+    }
+
+    return "unknown";
   }
 
   private generateSuggestions(
@@ -249,12 +494,17 @@ RESPONDA SEMPRE EM PORTUGUÊS BRASILEIRO, seja direto e mantenha foco total em v
 
     if (!context.orderedPizza) {
       suggestions.push("Calabresa", "Margherita", "Quatro Queijos");
-    } else if (!context.orderedDrink) {
+    } else if (!context.orderedDrink && !context.rejectedDrink) {
       suggestions.push("Coca-Cola", "Guaraná", "Suco de Laranja");
-    } else if (!context.orderedDessert) {
+    } else if (!context.orderedDessert && !context.rejectedDessert) {
       suggestions.push("Brownie", "Pudim", "Mousse de Maracujá");
     } else {
-      suggestions.push("Portuguesa", "Pepperoni", "Tiramisù");
+      // Se tudo foi pedido ou rejeitado, sugira mais pizzas ou finalize
+      if (!context.rejectedDrink && !context.rejectedDessert) {
+        suggestions.push("Portuguesa", "Pepperoni", "Frango c/ Catupiry");
+      } else {
+        suggestions.push("Pedido Confirmado", "Finalizar", "Obrigado");
+      }
     }
 
     return suggestions.slice(0, 3); // Máximo 3 sugestões
